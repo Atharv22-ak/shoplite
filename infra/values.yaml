@@ -1,0 +1,58 @@
+image:
+  registry: rwxatharv
+  tag: v1
+  pullPolicy: IfNotPresent
+
+host: shoplite.3.108.88.140.nip.io
+
+gateway:
+  name: main-gateway
+  namespace: default
+
+db:
+  name: shoplite
+  user: shop
+  password: change-me-please   # override: --set db.password=...
+  storage: 2Gi
+
+api:
+  replicas: 2
+  resources:
+    requests: {cpu: 50m, memory: 64Mi}
+    limits: {cpu: 300m, memory: 192Mi}
+
+frontend:
+  replicas: 1
+  resources:
+    requests: {cpu: 10m, memory: 16Mi}
+    limits: {cpu: 100m, memory: 64Mi}
+
+postgres:
+  resources:
+    requests: {cpu: 100m, memory: 128Mi}
+    limits: {cpu: 500m, memory: 384Mi}
+
+redis:
+  resources:
+    requests: {cpu: 20m, memory: 32Mi}
+    limits: {cpu: 100m, memory: 96Mi}
+
+# ---------- ELK toggle: true = deploy, false = skip ----------
+elk:
+  enabled: false
+  version: 8.13.4
+  kibanaHost: kibana.3.108.88.140.nip.io
+  elasticsearch:
+    heap: 512m
+    storage: 5Gi
+    resources:
+      requests: {cpu: 200m, memory: 1Gi}
+      limits: {cpu: 1000m, memory: 1280Mi}
+  kibana:
+    resources:
+      requests: {cpu: 100m, memory: 512Mi}
+      limits: {cpu: 500m, memory: 900Mi}
+  filebeat:
+    resources:
+      requests: {cpu: 20m, memory: 64Mi}
+      limits: {cpu: 200m, memory: 200Mi}

@@ -1,0 +1,234 @@
+{{- if .Values.elk.enabled }}
+# ===================== Elasticsearch =====================
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: elasticsearch-data
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: {{ .Values.elk.elasticsearch.storage }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: elasticsearch
+  labels: {app: elasticsearch}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector:
+    matchLabels: {app: elasticsearch}
+  template:
+    metadata:
+      labels: {app: elasticsearch}
+    spec:
+      securityContext:
+        fsGroup: 1000
+      containers:
+        - name: elasticsearch
+          image: docker.elastic.co/elasticsearch/elasticsearch:{{ .Values.elk.version }}
+          ports:
+            - containerPort: 9200
+          env:
+            - {name: discovery.type, value: single-node}
+            - {name: xpack.security.enabled, value: "false"}
+            - {name: cluster.routing.allocation.disk.threshold_enabled, value: "false"}
+            - {name: ES_JAVA_OPTS, value: "-Xms{{ .Values.elk.elasticsearch.heap }} -Xmx{{ .Values.elk.elasticsearch.heap }}"}
+          readinessProbe:
+            tcpSocket: {port: 9200}
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          volumeMounts:
+            - {name: data, mountPath: /usr/share/elasticsearch/data}
+          resources: {{- toYaml .Values.elk.elasticsearch.resources | nindent 12 }}
+      volumes:
+        - name: data
+          persistentVolumeClaim: {claimName: elasticsearch-data}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: elasticsearch
+spec:
+  selector: {app: elasticsearch}
+  ports:
+    - {port: 9200, targetPort: 9200}
+---
+# ===================== Kibana =====================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kibana
+  labels: {app: kibana}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: kibana}
+  template:
+    metadata:
+      labels: {app: kibana}
+    spec:
+      containers:
+        - name: kibana
+          image: docker.elastic.co/kibana/kibana:{{ .Values.elk.version }}
+          ports:
+            - containerPort: 5601
+          env:
+            - {name: ELASTICSEARCH_HOSTS, value: "http://elasticsearch:9200"}
+            - {name: NODE_OPTIONS, value: "--max-old-space-size=512"}
+          readinessProbe:
+            httpGet: {path: /api/status, port: 5601}
+            initialDelaySeconds: 60
+            periodSeconds: 15
+            failureThreshold: 20
+          resources: {{- toYaml .Values.elk.kibana.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kibana
+spec:
+  selector: {app: kibana}
+  ports:
+    - {port: 5601, targetPort: 5601}
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: kibana
+spec:
+  parentRefs:
+    - name: {{ .Values.gateway.name }}
+      namespace: {{ .Values.gateway.namespace }}
+  hostnames:
+    - {{ .Values.elk.kibanaHost | quote }}
+  rules:
+    - matches:
+        - path: {type: PathPrefix, value: /}
+      backendRefs:
+        - {name: kibana, port: 5601}
+---
+# ===================== Filebeat (log shipper) =====================
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: filebeat
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: filebeat-{{ .Release.Namespace }}
+rules:
+  - apiGroups: [""]
+    resources: [pods, nodes, namespaces]
+    verbs: [get, list, watch]
+  - apiGroups: ["apps"]
+    resources: [replicasets]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: filebeat-{{ .Release.Namespace }}
+subjects:
+  - {kind: ServiceAccount, name: filebeat, namespace: {{ .Release.Namespace }}}
+roleRef:
+  kind: ClusterRole
+  name: filebeat-{{ .Release.Namespace }}
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: filebeat-config
+data:
+  filebeat.yml: |
+    filebeat.autodiscover:
+      providers:
+        - type: kubernetes
+          node: ${NODE_NAME}
+          templates:
+            - condition:
+                equals:
+                  kubernetes.namespace: {{ .Release.Namespace }}
+              config:
+                - type: container
+                  paths:
+                    - /var/log/containers/*-${data.kubernetes.container.id}.log
+    processors:
+      - decode_json_fields:
+          fields: ["message"]
+          target: "app"
+          add_error_key: false
+    output.elasticsearch:
+      hosts: ["http://elasticsearch:9200"]
+      index: "shoplite-%{+yyyy.MM.dd}"
+    setup.template.name: "shoplite"
+    setup.template.pattern: "shoplite-*"
+    setup.ilm.enabled: false
+    logging.level: warning
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: filebeat
+  labels: {app: filebeat}
+spec:
+  selector:
+    matchLabels: {app: filebeat}
+  template:
+    metadata:
+      labels: {app: filebeat}
+    spec:
+      serviceAccountName: filebeat
+      containers:
+        - name: filebeat
+          image: docker.elastic.co/beats/filebeat:{{ .Values.elk.version }}
+          args: ["-c", "/etc/filebeat.yml", "-e", "--strict.perms=false"]
+          securityContext:
+            runAsUser: 0
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef: {fieldPath: spec.nodeName}
+          volumeMounts:
+            - {name: config, mountPath: /etc/filebeat.yml, subPath: filebeat.yml, readOnly: true}
+            - {name: varlog, mountPath: /var/log, readOnly: true}
+            - {name: data, mountPath: /usr/share/filebeat/data}
+          resources: {{- toYaml .Values.elk.filebeat.resources | nindent 12 }}
+      volumes:
+        - name: config
+          configMap: {name: filebeat-config}
+        - name: varlog
+          hostPath: {path: /var/log}
+        - name: data
+          hostPath: {path: /var/lib/filebeat-shoplite, type: DirectoryOrCreate}
+---
+# ===================== Auto-create Kibana data view =====================
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: kibana-setup
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 2
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: setup
+          image: curlimages/curl:8.8.0
+          command: ["sh", "-c"]
+          args:
+            - |
+              until curl -sf http://kibana:5601/api/status >/dev/null; do echo waiting for kibana; sleep 10; done
+              curl -s -X POST http://kibana:5601/api/data_views/data_view \
+                -H 'kbn-xsrf: true' -H 'Content-Type: application/json' \
+                -d '{"data_view":{"title":"shoplite-*","name":"ShopLite Logs","timeFieldName":"@timestamp"}}'
+              echo done
+{{- end }}

@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ShopLite Tasks</title>
+<style>
+ body{font-family:system-ui,sans-serif;max-width:560px;margin:40px auto;padding:0 16px;background:#f6f7f9;color:#222}
+ h1{margin-bottom:4px} .sub{color:#666;font-size:13px;margin-bottom:16px}
+ form{display:flex;gap:8px} input{flex:1;padding:10px;border:1px solid #ccc;border-radius:8px}
+ button{padding:10px 14px;border:0;border-radius:8px;background:#2563eb;color:#fff;cursor:pointer}
+ li{display:flex;align-items:center;gap:10px;background:#fff;margin:8px 0;padding:10px;border-radius:8px;list-style:none}
+ li span{flex:1;cursor:pointer} li.done span{text-decoration:line-through;color:#999}
+ li button{background:#ef4444;padding:4px 10px} ul{padding:0} .err{background:#6b7280;margin-top:12px}
+</style></head><body>
+<h1>ShopLite Tasks</h1>
+<div class="sub">Served from: <b id="cache">-</b> (Redis cache)</div>
+<form id="f"><input id="t" placeholder="New task..." autocomplete="off"><button>Add</button></form>
+<ul id="list"></ul>
+<button class="err" onclick="fetch('/api/simulate-error')">Generate error log</button>
+<script>
+const $=id=>document.getElementById(id);
+async function load(){
+  const r=await fetch('/api/tasks'); $('cache').textContent=r.headers.get('X-Cache')||'-';
+  const tasks=await r.json();
+  $('list').innerHTML=tasks.map(t=>`<li class="${t.done?'done':''}"><span onclick="tog(${t.id})">${t.title.replace(/</g,'&lt;')}</span><button onclick="del(${t.id})">x</button></li>`).join('');
+}
+async function tog(id){await fetch('/api/tasks/'+id,{method:'PATCH'});load()}
+async function del(id){await fetch('/api/tasks/'+id,{method:'DELETE'});load()}
+$('f').onsubmit=async e=>{e.preventDefault();const title=$('t').value;if(!title)return;
+  await fetch('/api/tasks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title})});$('t').value='';load()};
+load();
+</script></body></html>
